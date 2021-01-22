@@ -1,6 +1,6 @@
 # folders
 /node_modules
-/temp
+/audio
 
 # environment variables
 .env
