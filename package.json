@@ -1,0 +1,17 @@
+{
+  "name": "voice-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that uses speech to run different commands.",
+  "main": "app.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Anubhav Aryal",
+  "license": "ISC",
+  "dependencies": {
+    "@discordjs/opus": "^0.3.3",
+    "discord.js": "^12.5.1",
+    "dotenv": "^8.2.0",
+    "ffmpeg-static": "^4.2.7"
+  }
+}
