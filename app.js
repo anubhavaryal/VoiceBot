@@ -11,7 +11,6 @@ const discordClient = new Discord.Client();
 const {JWTInput} = require('google-auth-library');
 const speech = require('@google-cloud/speech');
 const firebase = require('firebase/app');
-const { on } = require('process');
 require('firebase/database');
 
 const googleCredentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
@@ -154,6 +153,14 @@ discordClient.on('message', async message => {
                                 if(transcript.startsWith(process.env.VOICE_PREFIX)) {
                                     const voiceCommand = transcript.substring(process.env.VOICE_PREFIX.length).trim();
                                     console.log(`Voice command detected: ${voiceCommand}`);
+
+                                    if(voiceCommand.startsWith("leave")) {
+                                        // leave the channel
+                                        server.voice.connection.channel.leave();
+                                    } else if(voiceCommand.startsWith("say")) {
+                                        // enters whatever the user said to the chat
+                                        channel.send(voiceCommand.substring(3).trim());
+                                    }
                                 }
                             } else {
                                 console.log(`Audio must be between ${process.env.MIN_LENGTH} and ${process.env.MAX_LENGTH} seconds to process.`);
@@ -169,7 +176,7 @@ discordClient.on('message', async message => {
             }
         } else if(command === "leave") {
             const userChannel = member.voice.channel;
-            const botChannel = server.voice.connection.channel;
+            const botChannel = server.me.voice.channel;
 
             // check if user and bot are both in a channel
             if(userChannel != null && botChannel != null) {
@@ -231,7 +238,6 @@ async function getAudioTranscript(filePath) {
 
 // increments the message count of a user in a server by 1
 async function updateMessageCount(server, user) {
-    console.log("entered updateMessageCount");
     let userRef = database.ref(`servers/${server}/users/${user}`);
     userRef.once('value', snapshot => {
         let messageChanged = false;
