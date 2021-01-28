@@ -1,7 +1,7 @@
 {
   "name": "voice-bot",
   "version": "1.0.0",
-  "description": "Discord bot that uses speech to run different commands.",
+  "description": "A bot for Discord that can use voice commands in addition to text commands.",
   "main": "app.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
