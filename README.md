@@ -70,3 +70,6 @@ To receive more information about commands, mention the bot (@ the bot) in the c
 
 # Hosting
 If you do not want to self-host the bot and host somewhere else such as [Heroku](https://dashboard.heroku.com/apps), set the environment variables with keys/values from the `.env` file then delete the file. If you keep the `.env` file, the bot may pull the environment variable values from the file rather than the environment variables you have specified.
+
+# Miscellaneous
+If you would like to change the intro sound that plays whenever the bot joins a voice channel, add the audio file to the `/res` folder and rename it to `intro.mp3`.
