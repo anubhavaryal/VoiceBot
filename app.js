@@ -98,6 +98,11 @@ discordClient.on('message', async message => {
     // increment the users message count
     updateMessageCount(server, user);
 
+    // check if bot was mentioned
+    if(message.mentions.users.array().find(user => user === discordClient.user) != undefined) {
+        message.channel.send(`To see a list of commands, type \`${process.env.TEXT_PREFIX}help\`.`);
+    }
+
     // check if the message is a command
     if(content.startsWith(process.env.TEXT_PREFIX)) {
         const channel = message.channel;
