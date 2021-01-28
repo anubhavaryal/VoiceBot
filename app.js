@@ -32,7 +32,7 @@ function checkEnv() {
     }
 
     if(process.env.VOICE_PREFIX === undefined) {
-        missingVariables.push("VOICE_PREFIX");lu
+        missingVariables.push("VOICE_PREFIX");
     }
 
     if(process.env.MIN_LENGTH === undefined) {
