@@ -4,15 +4,66 @@ const path = require('path');
 const fs = require('fs');
 
 const ffmpeg = require('fluent-ffmpeg');
+const ytdl = require('ytdl-core');
 
 const Discord = require('discord.js');
 const discordClient = new Discord.Client();
 
+const {google} = require('googleapis');
 const {JWTInput} = require('google-auth-library');
 const speech = require('@google-cloud/speech');
 const firebase = require('firebase/app');
 require('firebase/database');
 
+// checks all environment variables and makes sure that all of them are there
+function checkEnv() {
+    let missingVariables = [];
+
+    if(process.env.DISCORD_TOKEN === undefined) {
+        missingVariables.push("DISCORD_TOKEN");
+    }
+
+    if(process.env.BOT_NAME === undefined) {
+        missingVariables.push("BOT_NAME");
+    }
+
+    if(process.env.TEXT_PREFIX === undefined) {
+        missingVariables.push("TEXT_PREFIX");
+    }
+
+    if(process.env.VOICE_PREFIX === undefined) {
+        missingVariables.push("VOICE_PREFIX");lu
+    }
+
+    if(process.env.MIN_LENGTH === undefined) {
+        missingVariables.push("MIN_LENGTH");
+    }
+
+    if(process.env.MAX_LENGTH === undefined) {
+        missingVariables.push("MAX_LENGTH");
+    }
+
+    if(process.env.GOOGLE_CREDENTIALS === undefined) {
+        missingVariables.push("GOOGLE_CREDENTIALS");
+    }
+
+    if(process.env.FIREBASE_CONFIG === undefined) {
+        missingVariables.push("FIREBASE_CONFIG");
+    }
+
+    for(missingVariable of missingVariables) {
+        console.log(`Error: ${missingVariable} is undefined in environment variables.`);
+    }
+
+    // exit the program if some environment variables are missing
+    if(missingVariables.length > 0) {
+        process.exit(1);
+    }
+}
+
+checkEnv();
+
+// authenticate speech using credentials specified in environment variables
 const googleCredentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
 const speechClient = new speech.SpeechClient({
     credentials: {
@@ -23,56 +74,10 @@ const speechClient = new speech.SpeechClient({
 });
 
 const firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+const youtube = google.youtube({version: "v3", auth: firebaseConfig.apiKey});
 
 firebase.initializeApp(firebaseConfig);
 const database = firebase.database();
-
-// checks .env file to make sure all necessary variables are there
-function checkEnv() {
-    if(fs.existsSync('/.env')) {
-        console.log("Error: .env file not found.");
-        process.exit(1);
-    }
-
-    let safe = true;
-
-    if(process.env.DISCORD_TOKEN === undefined) {
-        console.log("Error: DISCORD_TOKEN is undefined in .env file.");
-        safe = false;
-    }
-
-    if(process.env.TEXT_PREFIX === undefined) {
-        console.log("Error: TEXT_PREFIX is undefined in .env file.");
-        safe = false;
-    }
-
-    if(process.env.VOICE_PREFIX === undefined) {
-        console.log("Error: VOICE_PREFIX is undefined in .env file.");
-        safe = false;
-    }
-
-    if(process.env.MAX_LENGTH === undefined) {
-        console.log("Error: MAX_LENGTH is undefined in .env file.");
-        safe = false;
-    }
-
-    if(process.env.GOOGLE_CREDENTIALS === undefined) {
-        console.log("Error: GOOGLE_CREDENTIALS is undefined in .env file.");
-        safe = false;
-    }
-
-    if(process.env.FIREBASE_CONFIG === undefined) {
-        console.log("Error: FIREBASE_CONFIG is undefined in .env file.");
-        safe = false;
-    }
-
-    // exit the program if some variables in .env are missing
-    if(!safe) {
-        process.exit(1);
-    }
-}
-
-checkEnv();
 
 discordClient.on('ready', () => {
     console.log("Bot is online.");
@@ -88,27 +93,19 @@ discordClient.on('message', async message => {
     let server = message.guild;
     let member = message.member;
     let user = member.user;
+    let stop = {stop: false}; // used by playVideos() to check if user asked to stop audio
 
     // increment the users message count
-    updateMessageCount(server.id, user.id);
+    updateMessageCount(server, user);
 
     // check if the message is a command
     if(content.startsWith(process.env.TEXT_PREFIX)) {
         const channel = message.channel;
-        const command = content.substring(process.env.TEXT_PREFIX.length); // stores the command (removes prefix)
+        const commandArguments = content.substring(process.env.TEXT_PREFIX.length).split(" "); // stores the command (removes prefix)
         
-        if(command === "help") {
-            // create an embed with help information
-            const helpEmbed = new Discord.MessageEmbed()
-                .setTitle("Commands")
-                .setDescription("List of bot commands.")
-                .setColor([0, 127, 255])
-                .addField(`${process.env.TEXT_PREFIX}help`, "Sends this message.")
-                .addField(`${process.env.TEXT_PREFIX}join`, "Bot joins the voice channel you are currently in. The user must be in a voice channel for this to work.")
-                .addField(`${process.env.TEXT_PREFIX}leave`, "Bot leaves the voice channel you are currently in. The user and the bot must be in the same voice channel for this to work.")
-                .setFooter(process.env.BOT_NAME, discordClient.user.avatarURL());
-            user.send(helpEmbed);
-        } else if(command === "join") {
+        if(commandArguments[0] === "help") {
+            sendHelpMessage(user, discordClient);
+        } else if(commandArguments[0] === "join") {
             const voiceChannel = member.voice.channel;
 
             if(voiceChannel != null) {
@@ -148,18 +145,40 @@ discordClient.on('message', async message => {
                                         fs.unlinkSync(newFilePath);
                                     });
                                 
-                                console.log(transcript);
+                                console.log(`Transcript: ${transcript}`);
 
                                 if(transcript.startsWith(process.env.VOICE_PREFIX)) {
-                                    const voiceCommand = transcript.substring(process.env.VOICE_PREFIX.length).trim();
+                                    const voiceCommand = transcript.substring(process.env.VOICE_PREFIX.length).trim().toLowerCase().split(" ");
                                     console.log(`Voice command detected: ${voiceCommand}`);
 
-                                    if(voiceCommand.startsWith("leave")) {
+                                    if(voiceCommand[0] === "help") {
+                                        sendHelpMessage(user, discordClient);
+                                    } else if(voiceCommand[0] === "leave") {
                                         // leave the channel
-                                        server.voice.connection.channel.leave();
-                                    } else if(voiceCommand.startsWith("say")) {
+                                        server.me.voice.channel.leave();
+                                    } else if(voiceCommand[0] === "say") {
                                         // enters whatever the user said to the chat
-                                        channel.send(voiceCommand.substring(3).trim());
+                                        channel.send(voiceCommand.slice(1).join(" "));
+                                    } else if(voiceCommand[0] === "playlist") {
+                                        const playlistName = voiceCommand[2] ?? "default";
+
+                                        if(voiceCommand[1] === "create") {
+                                            await createPlaylist(server, playlistName);
+                                        } else if(voiceCommand[1] === "delete") {
+                                            await deletePlaylist(server, playlistName);
+                                        } else if(voiceCommand[1] === "add") {
+                                            await getYoutubeLink(voiceCommand.slice(3).join(" ")).then(result => {
+                                                const videoLink = `https://www.youtube.com/watch?v=${result.data.items[0].id.videoId}`;
+                                                addToPlaylist(server, playlistName, videoLink);
+                                            });
+                                        } else if(voiceCommand[1] === "remove") {
+                                            await getYoutubeLink(voiceCommand.slice(3).join(" ")).then(result => {
+                                                const videoLink = `https://www.youtube.com/watch?v=${result.data.items[0].id.videoId}`;
+                                                removeFromPlaylist(server, playlistName, videoLink);
+                                            });
+                                        } else if(voiceCommand[1] === "play") {
+                                            await playPlaylist(server, playlistName, stop);
+                                        }
                                     }
                                 }
                             } else {
@@ -174,7 +193,7 @@ discordClient.on('message', async message => {
             } else {
                 channel.send(`<@${user.id}> You have to be in a voice channel to use that command.`);
             }
-        } else if(command === "leave") {
+        } else if(commandArguments[0] === "leave") {
             const userChannel = member.voice.channel;
             const botChannel = server.me.voice.channel;
 
@@ -189,9 +208,78 @@ discordClient.on('message', async message => {
             } else {
                 channel.send(`<@${user.id}> You and the bot both have to be in a voice channel to use that command.`);
             }
+        } else if(commandArguments[0] === "playlist") {
+            const playlistName = commandArguments[2] ?? "default";
+
+            if(commandArguments[1] === "create") {
+                await createPlaylist(server, playlistName);
+            } else if(commandArguments[1] === "delete") {
+                await deletePlaylist(server, playlistName);
+            } else if(commandArguments[1] === "add") {
+                if(commandArguments[3] != undefined) {
+                    if(commandArguments[3].startsWith("https://www.youtube.com")) {
+                        addToPlaylist(server, playlistName, commandArguments[3]);
+                    } else {
+                        await getYoutubeLink(commandArguments.slice(3).join(" ")).then(result => {
+                            const videoLink = `https://www.youtube.com/watch?v=${result.data.items[0].id.videoId}`;
+                            addToPlaylist(server, playlistName, videoLink);
+                        });
+                    }
+                }
+            } else if(commandArguments[1] === "remove") {
+                if(commandArguments[3] != undefined) {
+                    if(commandArguments[3].startsWith("https://www.youtube.com")) {
+                        removeFromPlaylist(server, playlistName, commandArguments[3]);
+                    } else {
+                        await getYoutubeLink(commandArguments.slice(3).join(" ")).then(result => {
+                            const videoLink = `https://www.youtube.com/watch?v=${result.data.items[0].id.videoId}`;
+                            removeFromPlaylist(server, playlistName, videoLink);
+                        });
+                    }
+                }
+            } else if(commandArguments[1] === "play") {
+                await playPlaylist(server, playlistName, stop);
+            } else if(commandArguments[1] === "stop") {
+                await stopPlaylist(server, stop);
+            } else if(commandArguments[1] === "show") {
+                await showPlaylist(server, playlistName, channel);
+            } else if(commandArguments[1] === "all") {
+                await showAllPlaylists(server, channel);
+            }
         }
     }
 });
+
+// creates an embed with help information and sends it to user
+async function sendHelpMessage(user, client) {
+    // create an embed with help information
+    const helpEmbed = new Discord.MessageEmbed()
+    .setTitle("Commands")
+    .setDescription("**(Required)**\nArguments surrounded by parantheses are required.\n\n**[Optional]**\nArguments surrounded by square brackets are optional.\n\n**Argument1|Argument2**\nArguments separated by a pipe means you can either choose Argument1 or Argument2 but not both.\n\nList of bot commands.")
+    .setColor([0, 127, 255])
+    .addField(`${process.env.TEXT_PREFIX}help / "${process.env.VOICE_PREFIX} help"`, "Sends this message.")
+    .addField(`${process.env.TEXT_PREFIX}join`, "Bot joins the voice channel you are currently in. The user must be in a voice channel for this to work.")
+    .addField(`${process.env.TEXT_PREFIX}leave / "${process.env.VOICE_PREFIX} leave"`, "Bot leaves the voice channel you are currently in. The user and the bot must be in the same voice channel for this to work.")
+    .addField(`${process.env.TEXT_PREFIX}playlist create [playlistName] / "${process.env.VOICE_PREFIX} playlist create [playlistName]"`, "Creates a playlist with the specified name (or name \"default\" if no name was specified).")
+    .addField(`${process.env.TEXT_PREFIX}playlist delete [playlistName] / "${process.env.VOICE_PREFIX} playlist delete [playlistName]"`, "Deletes the playlist with the specified name (or name \"default\" if no name was specified).")
+    .addField(`${process.env.TEXT_PREFIX}playlist add (playlistName) (videoLink)|(videoKeyword) / "${process.env.VOICE_PREFIX} playlist add (playlistName) (videoKeyword)"`, "Adds the specified video link/keyword to the specified playlist. Links must start with \"https://www.youtube.com.\" If a keyword is entered instead of a link, the most relevant search result will be used.")
+    .addField(`${process.env.TEXT_PREFIX}playlist remove (playlistName) (videoLink)|(videoKeyword) / "${process.env.VOICE_PREFIX} playlist remove (playlistName) (videoKeyword)"`, "Removes the specified video link/keyword from the specified playlist. Links must start with \"https://www.youtube.com.\" If a keyword is entered instead of a link, the most relevant search result will be used.")
+    .addField(`${process.env.TEXT_PREFIX}playlist play [playlistName] / "${process.env.VOICE_PREFIX} playlist play [playlistName]"`, "Plays all videos stored in the playlist with the specified name (or name \"default\" if no name was specified).")
+    .addField(`${process.env.TEXT_PREFIX}playlist stop`, "Stops the bot from playing all audio. This command cannot be activated with voice due to a limitation with discord.js.")
+    .addField(`${process.env.TEXT_PREFIX}playlist show [playlistName]`, "Sends an embed to the server showing the information for the playlist with the specified name (or name \"default\" if no name was specified).")
+    .addField(`${process.env.TEXT_PREFIX}playlist all`, "Sends an embed to the server showing all playlists on the server.")
+    .setFooter(process.env.BOT_NAME, client.user.avatarURL());
+    user.send(helpEmbed);
+}
+
+// returns the link of the top search result on youtube
+async function getYoutubeLink(search) {
+    return await youtube.search.list({
+        part: 'snippet',
+        q: search,
+        maxResults: 1
+    });
+}
 
 // convert 2 channel (stereo) pcm to 1 channel (mono) flac
 // synchronous since new file must be created before moving on
@@ -215,7 +303,7 @@ async function getAudioTranscript(filePath) {
         sampleRateHertz: 48000,
         languageCode: "en-US",
         speechContexts: [{
-            "phrases": [process.env.VOICE_PREFIX]
+            phrases: [process.env.VOICE_PREFIX]
         }]
     };
 
@@ -238,13 +326,14 @@ async function getAudioTranscript(filePath) {
 
 // increments the message count of a user in a server by 1
 async function updateMessageCount(server, user) {
-    let userRef = database.ref(`servers/${server}/users/${user}`);
+    let userRef = database.ref(`servers/${server.id}/users/${user.id}`);
+
+    // iterate through all of the data snapshots in the reference
     userRef.once('value', snapshot => {
         let messageChanged = false;
-        snapshot.forEach(child => {
-            const key = child.key;
 
-            if(key === "messageCount") {
+        snapshot.forEach(child => {
+            if(child.key === "messageCount") {
                 const count = child.val();
                 userRef.set({
                     messageCount: count + 1
@@ -257,6 +346,199 @@ async function updateMessageCount(server, user) {
             userRef.set({
                 messageCount: 1
             });
+        }
+    });
+}
+
+// creates an empty playlist in the server
+async function createPlaylist(server, playlistName) {
+    let playlistRef = database.ref(`servers/${server.id}/playlists`);
+
+    // check if the playlist already exists
+    let exists = false;
+
+    playlistRef.once('value', snapshot => {
+        snapshot.forEach(child => {
+            if(child.key === playlistName) {
+                exists = true;
+            }
+        })
+    });
+
+    if(!exists) {
+        // create description showing when playlist was created
+        const currentTime = new Date();
+        const day = String(currentTime.getDate()).padStart(2, "0");
+        const month = String(currentTime.getMonth() + 1).padStart(2, "0");
+        const year = currentTime.getFullYear();
+        const hour = String(currentTime.getHours()).padStart(2, "0");
+        const minute = String(currentTime.getMinutes()).padStart(2, "0");
+
+        const playlistDescription = `Playlist Created: ${month}/${day}/${year} ${hour}:${minute}`;
+
+        playlistRef.update({
+            [playlistName]: [playlistDescription]
+        });
+    }
+}
+
+// deletes the playlist in the server
+async function deletePlaylist(server, playlistName) {
+    let playlistRef = database.ref(`servers/${server.id}/playlists`);
+
+    playlistRef.once('value', snapshot => {
+        snapshot.forEach(child => {
+            if(child.key === playlistName) {
+                child.ref.remove();
+            }
+        });
+    });
+}
+
+// adds the youtube link to the servers playlist
+async function addToPlaylist(server, playlistName, videoLink) {
+    let playlistRef = database.ref(`servers/${server.id}/playlists`);
+
+    playlistRef.once('value', snapshot => {
+        snapshot.forEach(child => {
+            if(child.key === playlistName) {
+                const val = child.val();
+                let playlist = [];
+
+                // recreate playlist array from the object
+                Object.keys(val).forEach(key => {
+                    playlist = [...playlist, val[key]];
+                });
+
+                playlist = [...playlist, videoLink];
+                child.ref.set(playlist);
+            }
+        });
+    });
+}
+
+// removes the youtube link from the servers playlist
+async function removeFromPlaylist(server, playlistName, videoLink) {
+    let playlistRef = database.ref(`servers/${server.id}/playlists`);
+
+    playlistRef.once('value', snapshot => {
+        snapshot.forEach(child => {
+            if(child.key === playlistName) {
+                const val = child.val();
+                let playlist = [];
+
+                Object.keys(val).forEach(key => {
+                    playlist = [...playlist, val[key]];
+                });
+
+                // remove all instances of video link in the playlist
+                playlist = playlist.filter(link => link !== videoLink);
+                child.ref.set(playlist);
+            }
+        });
+    });
+}
+
+// plays all the links in the servers playlist 
+async function playPlaylist(server, playlistName, stop) {
+    stop.stop = false; // stop stop if stopped
+    let playlistRef = database.ref(`servers/${server.id}/playlists`);
+
+    playlistRef.once('value', snapshot => {
+        snapshot.forEach(child => {
+            if(child.key === playlistName) {
+                const val = child.val();
+                let playlist = [];
+
+                Object.keys(val).forEach(key => {
+                    playlist = [...playlist, val[key]];
+                });
+
+                playlist.shift(); // first element in playlist is always description
+                playVideos(server, playlist, stop);
+            }
+        })
+    });
+}
+
+// plays the first video specified in the array videoLinks
+async function playVideos(server, videoLinks, stop) {
+    // make sure videoLinks isn't empty
+    if(videoLinks.length !== 0) {
+        const voiceConnection = server.me.voice.connection;
+        const videoLink = videoLinks.shift();
+
+        const dispatcher = voiceConnection.play(ytdl(videoLink));
+
+        dispatcher.on('speaking', speaking => {
+            // check if user asked to stop
+            if(!speaking && !stop.stop) {
+                // play the next video
+                playVideos(server, videoLinks, stop);
+            }
+        })
+    }
+}
+
+// stops playing links in servers playlist
+async function stopPlaylist(server, stop) {
+    // stop playVideos from running if true
+    stop.stop = true;
+
+    // make bot play silence (effectively stopping bot from speaking)
+    const introFilePath = path.join(__dirname, "res", "silence.mp3");
+    server.me.voice.connection.play(introFilePath);
+}
+
+// sends an embed to the specified channel displaying playlist information
+async function showPlaylist(server, playlistName, channel) {
+    let playlistEmbed = new Discord.MessageEmbed(); // embed that will contain playlist information
+    let playlistRef = database.ref(`servers/${server.id}/playlists`);
+
+    playlistRef.once('value', snapshot => {
+        snapshot.forEach(child => {
+            const key = child.key;
+
+            if(key === playlistName) {
+                const val = child.val();
+                let playlist = [];
+
+                Object.keys(val).forEach(key => {
+                    playlist = [...playlist, val[key]];
+                });
+
+                const description = playlist.shift();
+
+                playlistEmbed.setTitle(key);
+                playlistEmbed.setDescription(description);
+
+                for(let i = 0; i < playlist.length; i++) {
+                    playlistEmbed.addField(`#${i + 1}`, playlist[i]);
+                }
+
+                channel.send(playlistEmbed);
+            }
+        })
+    });
+}
+
+// sends an embed to the specified channel displaying all playlists
+async function showAllPlaylists(server, channel) {
+    let allPlaylistsEmbed = new Discord.MessageEmbed();
+    allPlaylistsEmbed.setTitle(server.name);
+    allPlaylistsEmbed.setDescription("All playlists on the server.");
+
+    let playlistRef = database.ref(`servers/${server.id}/playlists`);
+
+    playlistRef.once('value', snapshot => {
+        const val = snapshot.val();
+
+        if(val != undefined) {
+            Object.keys(val).forEach(key => {
+                allPlaylistsEmbed.addField(key, val[key][0]);
+            });
+
+            channel.send(allPlaylistsEmbed);
         }
     });
 }
